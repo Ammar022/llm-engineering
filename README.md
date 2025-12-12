@@ -142,38 +142,7 @@ cp .env.sample .env
 # edit .env and set your real keys
 ```
 
-> **Security:** Never commit `.env` to a public repository. Make sure `.env` is in your `.gitignore`.
-
 ---
-
-## OpenAI: Tool-Calling Example (`open_ai_llm.py`)
-
-This module demonstrates how to:
-
-- Define a **Python function** (a tool) `get_horoscope(sign: str)`.
-- Expose it to the OpenAI model via the `tools` schema.
-- Let the model decide when to call the tool.
-- Feed the tool output back to the model for a natural-language answer.
-
-### Key Concepts
-
-- **`get_horoscope(sign: str)`**
-  - A mock implementation that returns a deterministic, playful horoscope string.
-  - In a real system this would call an external horoscope API or internal business logic.
-
-- **`AVAILABLE_TOOLS`**
-  - A JSON-style schema describing the tool interface for the model:
-    - Name: `get_horoscope`
-    - Input: `{ "sign": string }`
-
-- **`HoroscopeAgent`**
-  - Handles:
-    - Loading `OPENAI_API_KEY` from `.env`.
-    - Maintaining a conversation `history`.
-    - Making **two-phase** calls to the OpenAI Responses API:
-      1. First call: let the model reason and request tool calls.
-      2. Execute any tools (`get_horoscope`), append outputs to history.
-      3. Second call: ask the model to synthesize a final natural-language answer.
 
 ### Running the OpenAI example
 
@@ -260,24 +229,3 @@ To debug with `pipenv`:
 2. Open `open_ai_llm.py` or `anthropic_llm.py`.
 3. Set breakpoints.
 4. Run the **Python: Current File** configuration.
-
----
-
-## Extending This Project
-
-Some ideas to evolve this into a more advanced LLM engineering playground:
-
-- **Multiple tools:**
-  - Add more functions (e.g., weather lookup, calendar, notes) and expose them via the `tools` array.
-- **Stateful agents:**
-  - Persist conversation history beyond a single run (e.g., to a database or file).
-- **Evaluation:**
-  - Add pytest-based tests to validate tool behavior and prompt patterns.
-- **Abstractions:**
-  - Wrap provider-specific clients behind a common interface for easier switching.
-
----
-
-## Disclaimer
-
-This repository is intended as an educational playground for experimenting with LLM providers. **Do not** commit secrets, production keys, or sensitive data. Rotate any keys used in demos before reusing them in real systems.
