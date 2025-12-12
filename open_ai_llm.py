@@ -1,5 +1,6 @@
 import json
 import os
+import re
 import logging
 from typing import List, Dict, Any
 from dotenv import load_dotenv
@@ -52,6 +53,26 @@ def get_stock_price(ticker: str):
 
     return f"The current stock price of {ticker} is ${price}."
 
+
+def calculate(expression: str) -> float:
+    """Safely evaluate a basic math expression.
+
+    Supports things like percentages and arithmetic, e.g. "15% of 2500".
+    This is intentionally conservative: it only allows digits, spaces,
+    basic operators, decimal points, parentheses and the percent sign.
+    """
+
+    # Simple normalization: "15% of 2500" -> "(15/100)*2500"
+    normalized = expression.lower().strip()
+    normalized = normalized.replace("% of", "/100 *")
+
+    # Allow only safe characters
+    if not re.fullmatch(r"[0-9+\-*/(). %]+", normalized):
+        raise ValueError("Expression contains unsupported characters.")
+
+    # Final safety: evaluate with empty globals/locals
+    return eval(normalized, {"__builtins__": {}}, {})
+
 # Tool Schemas (The "Menu" for the LLM)
 AVAILABLE_TOOLS = [
     {
@@ -84,6 +105,21 @@ AVAILABLE_TOOLS = [
             "required": ["ticker"],
         },
     },
+    {
+        "type": "function",
+        "name": "calculate",
+        "description": "Safely evaluate a basic math expression.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "expression": {
+                    "type": "string",
+                    "description": "Math expression to evaluate, e.g. '15% of 2500' or '3 * (4 + 5)'.",
+                }
+            },
+            "required": ["expression"],
+        },
+    },
 ]
 
 class PriceAgent:
@@ -108,6 +144,9 @@ class PriceAgent:
                     return get_product_price(product_name=arguments.get("product_name"))
                 elif function_name == "get_stock_price":
                     return get_stock_price(ticker=arguments.get("ticker"))
+                elif function_name == "calculate":
+                    result = calculate(expression=arguments.get("expression", ""))
+                    return f"Result of '{arguments.get('expression', '')}' is {result}."
                 else:
                     logger.warning(f"Error: Tool {function_name} not found.")
                     return f"Error: Tool {function_name} not found."
@@ -168,4 +207,9 @@ class PriceAgent:
 
 if __name__ == "__main__":
     agent = PriceAgent()
-    agent.run("What is the price of Redmi Note 10S 8GB/128GB? And also, what is the stock price of TSLA?")
+    agent.run(
+        "Use your tools to answer. "
+        "First, what is 69% of 69? "
+        "Then, what is the price of Redmi Note 10S 8GB/128GB? "
+        "And also, what is the stock price of TSLA?"
+    )
