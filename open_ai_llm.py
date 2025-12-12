@@ -3,8 +3,10 @@ import os
 import re
 import logging
 from typing import List, Dict, Any
+
 from dotenv import load_dotenv
 from openai import OpenAI
+from pydantic import BaseModel, ValidationError
 
 logging.basicConfig(
     level=logging.INFO,
@@ -16,6 +18,21 @@ logger = logging.getLogger(__name__)
 load_dotenv()
 
 MODEL_NAME = "gpt-4.1-mini"
+
+
+class ProductPriceArgs(BaseModel):
+    product_name: str
+    reason: str | None = None
+
+
+class StockPriceArgs(BaseModel):
+    ticker: str
+    reason: str | None = None
+
+
+class CalculateArgs(BaseModel):
+    expression: str
+    reason: str | None = None
 
 def get_product_price(product_name: str):
     # Dummy product catalog
@@ -55,22 +72,24 @@ def get_stock_price(ticker: str):
 
 
 def calculate(expression: str) -> float:
-    """Safely evaluate a basic math expression.
-
-    Supports things like percentages and arithmetic, e.g. "15% of 2500".
-    This is intentionally conservative: it only allows digits, spaces,
-    basic operators, decimal points, parentheses and the percent sign.
-    """
-
-    # Simple normalization: "15% of 2500" -> "(15/100)*2500"
+    """Safely evaluate a basic math expression."""
+    # Simple normalization
     normalized = expression.lower().strip()
+
+    # Handle 'a% of b'  -> '(a/100)*b'
     normalized = normalized.replace("% of", "/100 *")
+
+    # Handle 'a% * b' or 'a%  b' -> '(a/100)*b'
+    # e.g. '69% * 69' -> '(69/100)*69'
+    match = re.fullmatch(r"\s*(\d+)\s*%\s*\*\s*(\d+)\s*", normalized)
+    if match:
+        a, b = match.groups()
+        normalized = f"({a}/100)*{b}"
 
     # Allow only safe characters
     if not re.fullmatch(r"[0-9+\-*/(). %]+", normalized):
         raise ValueError("Expression contains unsupported characters.")
 
-    # Final safety: evaluate with empty globals/locals
     return eval(normalized, {"__builtins__": {}}, {})
 
 # Tool Schemas (The "Menu" for the LLM)
@@ -85,7 +104,11 @@ AVAILABLE_TOOLS = [
                 "product_name": {
                     "type": "string",
                     "description": "Name of the product to get the price for.",
-                }
+                },
+                "reason": {
+                    "type": "string",
+                    "description": "Short explanation of why this tool is appropriate.",
+                },
             },
             "required": ["product_name"],
         },
@@ -100,7 +123,11 @@ AVAILABLE_TOOLS = [
                 "ticker": {
                     "type": "string",
                     "description": "Ticker symbol of the stock to get the price for.",
-                }
+                },
+                "reason": {
+                    "type": "string",
+                    "description": "Short explanation of why this tool is appropriate.",
+                },
             },
             "required": ["ticker"],
         },
@@ -115,7 +142,11 @@ AVAILABLE_TOOLS = [
                 "expression": {
                     "type": "string",
                     "description": "Math expression to evaluate, e.g. '15% of 2500' or '3 * (4 + 5)'.",
-                }
+                },
+                "reason": {
+                    "type": "string",
+                    "description": "Short explanation of why this tool is appropriate.",
+                },
             },
             "required": ["expression"],
         },
@@ -133,30 +164,58 @@ class PriceAgent:
         self.max_retries = max_retries
 
     def _execute_tool(self, tool_call: Any) -> str:
-        """Parses the LLM request and executes the corresponding Python function with retry."""
+        """Parses the LLM request and executes one of the Python tools with validation and retry."""
         retries = 0
         while retries <= self.max_retries:
             try:
                 function_name = tool_call.name
-                arguments = json.loads(tool_call.arguments)
-                
+                raw_arguments = json.loads(tool_call.arguments or "{}")
+
+                logger.info(f"Tool requested: {function_name} with raw args: {raw_arguments}")
+
                 if function_name == "get_product_price":
-                    return get_product_price(product_name=arguments.get("product_name"))
+                    args = ProductPriceArgs(**raw_arguments)
+                    if args.reason:
+                        logger.info(f"Model's reason for using get_product_price: {args.reason}")
+                    result = get_product_price(product_name=args.product_name)
+
                 elif function_name == "get_stock_price":
-                    return get_stock_price(ticker=arguments.get("ticker"))
+                    args = StockPriceArgs(**raw_arguments)
+                    if args.reason:
+                        logger.info(f"Model's reason for using get_stock_price: {args.reason}")
+                    result = get_stock_price(ticker=args.ticker)
+
                 elif function_name == "calculate":
-                    result = calculate(expression=arguments.get("expression", ""))
-                    return f"Result of '{arguments.get('expression', '')}' is {result}."
+                    args = CalculateArgs(**raw_arguments)
+                    if args.reason:
+                        logger.info(f"Model's reason for using calculate: {args.reason}")
+                    calc_result = calculate(expression=args.expression)
+                    result = f"Result of '{args.expression}' is {calc_result}."
+
                 else:
                     logger.warning(f"Error: Tool {function_name} not found.")
                     return f"Error: Tool {function_name} not found."
-            
+
+                logger.info(f"Tool {function_name} executed successfully with result: {result}")
+                return result
+
+            except ValidationError as ve:
+                retries += 1
+                logger.warning(
+                    f"Argument validation failed for '{tool_call.name}', "
+                    f"attempt {retries}/{self.max_retries}: {ve}"
+                )
+                if retries > self.max_retries:
+                    return f"Error: Invalid arguments for {tool_call.name}."
+
             except Exception as e:
                 retries += 1
-                logger.warning(f"Error executing tool '{tool_call.name}', attempt {retries}/{self.max_retries}: {e}")
+                logger.warning(
+                    f"Error executing tool '{tool_call.name}', "
+                    f"attempt {retries}/{self.max_retries}: {e}"
+                )
                 if retries > self.max_retries:
                     return f"Error: Failed to execute {tool_call.name} after {self.max_retries} retries."
-                
 
     def run(self, user_query: str):
         """Main orchestration loop."""
@@ -207,9 +266,6 @@ class PriceAgent:
 
 if __name__ == "__main__":
     agent = PriceAgent()
-    agent.run(
-        "Use your tools to answer. "
-        "First, what is 69% of 69? "
-        "Then, what is the price of Redmi Note 10S 8GB/128GB? "
-        "And also, what is the stock price of TSLA?"
-    )
+    agent.run("what is the price of Redmi Note 10S 8GB/128GB?")
+    agent.run("what is the stock price of TSLA?")
+    agent.run("Calculate 69% of 69?")
